@@ -1,0 +1,12 @@
+{
+  "name": "Google Sheet Roller",
+  "version": "1.0.0",
+  "manifest_version": 1,
+  "action": {
+    "title": "Sheet Roller",
+    "icon": "/icon.svg",
+    "popover": "/",
+    "height": 650,
+    "width": 420
+  }
+}

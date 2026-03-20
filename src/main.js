@@ -10,9 +10,11 @@ app.innerHTML = `
   <input id="script-url" type="text" placeholder="Paste your Apps Script URL here" />
 
   <button id="save-url">Save URL</button>
+  <button id="test-connection">Test Connection</button>
   <button id="load-data">Load Character</button>
   <button id="roll-init">Roll Initiative</button>
-  <button id="roll-weapon">Roll Weapon</button>
+  <button id="weapon-attack">Weapon Attack</button>
+  <button id="weapon-damage">Weapon Damage</button>
 
   <div id="result"></div>
 `;
@@ -93,14 +95,30 @@ async function init() {
     await OBR.notification.show("Apps Script URL saved");
   };
 
+  document.getElementById("test-connection").onclick = async () => {
+    try {
+      const data = await getCharacter();
+      result.innerHTML = `
+        <p style="color:lightgreen;"><strong>Connected successfully</strong></p>
+        <p>Name: ${data.name}</p>
+      `;
+      await OBR.notification.show(`Connected to ${data.name}`);
+    } catch (err) {
+      console.error(err);
+      result.innerHTML = `<p style="color:red;">Connection failed: ${err.message}</p>`;
+      await OBR.notification.show("Connection failed");
+    }
+  };
+
   document.getElementById("load-data").onclick = async () => {
     try {
       character = await getCharacter();
 
       result.innerHTML = `
         <p><strong>${character.name}</strong></p>
-        <p>AC: ${character.ac} | HP: ${character.hp}</p>
-        <p>Init: ${character.initiative}</p>
+        <p>AC: ${character.ac}</p>
+        <p>HP: ${character.hpCurrent ?? "?"} / ${character.hpMax ?? "?"}</p>
+        <p>Initiative: ${character.initiative}</p>
         <p>Weapon: ${character.weapon1Name}</p>
         <p>Attack Bonus: ${character.weapon1Hit}</p>
         <p>Damage: ${character.weapon1Damage}</p>
@@ -134,27 +152,45 @@ async function init() {
     }
   };
 
-  document.getElementById("roll-weapon").onclick = async () => {
+  document.getElementById("weapon-attack").onclick = async () => {
     try {
       if (!character) character = await getCharacter();
 
       const d20 = Math.floor(Math.random() * 20) + 1;
       const attackBonus = parseBonus(character.weapon1Hit);
       const attackTotal = d20 + attackBonus;
-      const damage = rollDice(character.weapon1Damage);
 
       result.innerHTML = `
-        <p><strong>${character.weapon1Name}</strong></p>
-        <p>Attack: ${d20} + ${attackBonus} = <strong>${attackTotal}</strong></p>
-        <p>Damage: ${damage.formula} = <strong>${damage.total}</strong></p>
+        <p><strong>${character.weapon1Name} Attack</strong></p>
+        <p>${d20} + ${attackBonus} = <strong>${attackTotal}</strong></p>
       `;
 
       await OBR.notification.show(
-        `${character.name} used ${character.weapon1Name}: attack ${attackTotal}, damage ${damage.total}`
+        `${character.name} attacked with ${character.weapon1Name}: ${attackTotal}`
       );
     } catch (err) {
       console.error(err);
-      result.innerHTML = `<p style="color:red;">Weapon roll failed: ${err.message}</p>`;
+      result.innerHTML = `<p style="color:red;">Attack failed: ${err.message}</p>`;
+    }
+  };
+
+  document.getElementById("weapon-damage").onclick = async () => {
+    try {
+      if (!character) character = await getCharacter();
+
+      const damage = rollDice(character.weapon1Damage);
+
+      result.innerHTML = `
+        <p><strong>${character.weapon1Name} Damage</strong></p>
+        <p>${damage.formula} = <strong>${damage.total}</strong></p>
+      `;
+
+      await OBR.notification.show(
+        `${character.name} rolled ${character.weapon1Name} damage: ${damage.total}`
+      );
+    } catch (err) {
+      console.error(err);
+      result.innerHTML = `<p style="color:red;">Damage failed: ${err.message}</p>`;
     }
   };
 }

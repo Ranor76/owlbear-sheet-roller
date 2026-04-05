@@ -4,7 +4,7 @@ import "./style.css";
 const app = document.querySelector("#app");
 
 app.innerHTML = `
-  <h2>Google Sheet Roller</h2>
+  <h2>Google Sheet Roller v2 DIRECT</h2>
 
   <label for="script-url">Apps Script URL</label>
   <input id="script-url" type="text" placeholder="Paste your Apps Script URL here" />
@@ -17,6 +17,7 @@ app.innerHTML = `
   <button id="weapon-attack">Weapon Attack</button>
   <button id="weapon-damage">Weapon Damage</button>
 
+  <p id="saved-url-display"></p>
   <div id="character-info"></div>
   <div id="result"></div>
 `;
@@ -24,8 +25,9 @@ app.innerHTML = `
 const result = document.getElementById("result");
 const scriptUrlInput = document.getElementById("script-url");
 const characterInfo = document.getElementById("character-info");
+const savedUrlDisplay = document.getElementById("saved-url-display");
 
-let character = null;
+let characterData = null;
 
 function getSavedScriptUrl() {
   return localStorage.getItem("sheet_roller_script_url") || "";
@@ -36,6 +38,7 @@ function saveScriptUrl(url) {
 }
 
 scriptUrlInput.value = getSavedScriptUrl();
+savedUrlDisplay.textContent = `Saved URL: ${getSavedScriptUrl() || "(none)"}`;
 
 async function getCharacter() {
   const source = getSavedScriptUrl();
@@ -44,7 +47,8 @@ async function getCharacter() {
     throw new Error("No Apps Script URL saved");
   }
 
-  const proxyUrl = `/.netlify/functions/character?source=${encodeURIComponent(source)}`;
+  const proxyBase = "https://owlbear-sheet-roller.netlify.app/.netlify/functions/character";
+  const proxyUrl = `${proxyBase}?source=${encodeURIComponent(source)}`;
 
   const response = await fetch(proxyUrl, {
     method: "GET",
@@ -60,12 +64,13 @@ async function getCharacter() {
 }
 
 function parseBonus(value) {
-  return Number(String(value).replace(/\s+/g, "")) || 0;
+  if (value === null || value === undefined || value === "") return 0;
+  return Number(String(value).replace(/\s+/g, "").replace(/^\+/, "")) || 0;
 }
 
 function rollDice(formula) {
   const clean = String(formula).replace(/\s+/g, "");
-  const match = clean.match(/(\d+)d(\d+)([+-]\d+)?/i);
+  const match = clean.match(/^(\d+)d(\d+)([+-]\d+)?$/i);
 
   if (!match) {
     throw new Error(`Invalid dice formula: ${formula}`);
@@ -89,23 +94,37 @@ function rollDice(formula) {
   return { formula: clean, rolls, mod, total };
 }
 
+function getPrimaryAttack(data) {
+  if (!data?.attacks || !Array.isArray(data.attacks) || data.attacks.length === 0) {
+    return null;
+  }
+
+  const equipped = data.attacks.find(a => a.equipped);
+  return equipped || data.attacks[0];
+}
+
 function renderCharacter(data) {
+  const c = data.character || {};
+  const firstAttack = getPrimaryAttack(data);
+
   characterInfo.innerHTML = `
-    <p><strong>${data.name}</strong></p>
-    <p>AC: ${data.ac}</p>
-    <p>HP: ${data.hpCurrent ?? "?"} / ${data.hpMax ?? "?"}</p>
-    <p>Initiative: ${data.initiative}</p>
-    <p>Weapon: ${data.weapon1Name}</p>
-    <p>Attack Bonus: ${data.weapon1Hit}</p>
-    <p>Damage: ${data.weapon1Damage}</p>
+    <p><strong>${c.name || "Unknown Character"}</strong></p>
+    <p>AC: ${c.ac ?? "?"}</p>
+    <p>HP: ${c.hp?.current ?? "?"} / ${c.hp?.max ?? "?"}</p>
+    <p>Temp HP: ${c.hp?.temp ?? 0}</p>
+    <p>Initiative: ${c.initiative ?? "?"}</p>
+    <p>Speed: ${c.speed ?? "?"}</p>
+    <p>Weapon: ${firstAttack ? firstAttack.name : "None"}</p>
+    <p>Attack Bonus: ${firstAttack ? firstAttack.attackBonus : "-"}</p>
+    <p>Damage: ${firstAttack ? firstAttack.damage : "-"}</p>
   `;
 }
 
 function requireCharacter() {
-  if (!character) {
+  if (!characterData) {
     throw new Error("No character loaded. Click Load Character first.");
   }
-  return character;
+  return characterData;
 }
 
 async function init() {
@@ -114,7 +133,8 @@ async function init() {
   document.getElementById("save-url").onclick = async () => {
     const url = scriptUrlInput.value.trim();
     saveScriptUrl(url);
-    character = null;
+    savedUrlDisplay.textContent = `Saved URL: ${url || "(none)"}`;
+    characterData = null;
     characterInfo.innerHTML = "";
     result.innerHTML = `<p>Saved URL. Character cache cleared.</p>`;
     await OBR.notification.show("Apps Script URL saved");
@@ -123,11 +143,17 @@ async function init() {
   document.getElementById("test-connection").onclick = async () => {
     try {
       const data = await getCharacter();
+      const name = data.character?.name || "Unknown Character";
+
       result.innerHTML = `
         <p style="color:lightgreen;"><strong>Connected successfully</strong></p>
-        <p>Name: ${data.name}</p>
+        <p>Name: ${name}</p>
+        <p>Attacks: ${data.attacks?.length || 0}</p>
+        <p>Spells: ${data.spells?.length || 0}</p>
+        <p>Features: ${data.features?.length || 0}</p>
       `;
-      await OBR.notification.show(`Connected to ${data.name}`);
+
+      await OBR.notification.show(`Connected to ${name}`);
     } catch (err) {
       console.error(err);
       result.innerHTML = `<p style="color:red;">Connection failed: ${err.message}</p>`;
@@ -137,10 +163,12 @@ async function init() {
 
   document.getElementById("load-data").onclick = async () => {
     try {
-      character = await getCharacter();
-      renderCharacter(character);
+      characterData = await getCharacter();
+      renderCharacter(characterData);
+
+      const name = characterData.character?.name || "Unknown Character";
       result.innerHTML = `<p>Character loaded and cached.</p>`;
-      await OBR.notification.show(`Loaded ${character.name}`);
+      await OBR.notification.show(`Loaded ${name}`);
     } catch (err) {
       console.error(err);
       result.innerHTML = `<p style="color:red;">Load failed: ${err.message}</p>`;
@@ -150,10 +178,12 @@ async function init() {
 
   document.getElementById("refresh-data").onclick = async () => {
     try {
-      character = await getCharacter();
-      renderCharacter(character);
+      characterData = await getCharacter();
+      renderCharacter(characterData);
+
+      const name = characterData.character?.name || "Unknown Character";
       result.innerHTML = `<p>Character refreshed from sheet.</p>`;
-      await OBR.notification.show(`Refreshed ${character.name}`);
+      await OBR.notification.show(`Refreshed ${name}`);
     } catch (err) {
       console.error(err);
       result.innerHTML = `<p style="color:red;">Refresh failed: ${err.message}</p>`;
@@ -164,17 +194,18 @@ async function init() {
   document.getElementById("roll-init").onclick = async () => {
     try {
       const data = requireCharacter();
+      const c = data.character || {};
 
       const d20 = Math.floor(Math.random() * 20) + 1;
-      const bonus = parseBonus(data.initiative);
+      const bonus = parseBonus(c.initiative);
       const total = d20 + bonus;
 
       result.innerHTML = `
-        <p><strong>${data.name}</strong> initiative</p>
+        <p><strong>${c.name || "Character"}</strong> initiative</p>
         <p>${d20} + ${bonus} = <strong>${total}</strong></p>
       `;
 
-      await OBR.notification.show(`${data.name} rolled initiative ${total}`);
+      await OBR.notification.show(`${c.name || "Character"} rolled initiative ${total}`);
     } catch (err) {
       console.error(err);
       result.innerHTML = `<p style="color:red;">Initiative failed: ${err.message}</p>`;
@@ -184,18 +215,24 @@ async function init() {
   document.getElementById("weapon-attack").onclick = async () => {
     try {
       const data = requireCharacter();
+      const c = data.character || {};
+      const attack = getPrimaryAttack(data);
+
+      if (!attack) {
+        throw new Error("No attack found.");
+      }
 
       const d20 = Math.floor(Math.random() * 20) + 1;
-      const attackBonus = parseBonus(data.weapon1Hit);
+      const attackBonus = parseBonus(attack.attackBonus);
       const attackTotal = d20 + attackBonus;
 
       result.innerHTML = `
-        <p><strong>${data.weapon1Name} Attack</strong></p>
+        <p><strong>${attack.name} Attack</strong></p>
         <p>${d20} + ${attackBonus} = <strong>${attackTotal}</strong></p>
       `;
 
       await OBR.notification.show(
-        `${data.name} attacked with ${data.weapon1Name}: ${attackTotal}`
+        `${c.name || "Character"} attacked with ${attack.name}: ${attackTotal}`
       );
     } catch (err) {
       console.error(err);
@@ -206,16 +243,26 @@ async function init() {
   document.getElementById("weapon-damage").onclick = async () => {
     try {
       const data = requireCharacter();
+      const c = data.character || {};
+      const attack = getPrimaryAttack(data);
 
-      const damage = rollDice(data.weapon1Damage);
+      if (!attack) {
+        throw new Error("No attack found.");
+      }
+
+      if (!attack.damage) {
+        throw new Error(`No damage formula found for ${attack.name}.`);
+      }
+
+      const damage = rollDice(attack.damage);
 
       result.innerHTML = `
-        <p><strong>${data.weapon1Name} Damage</strong></p>
+        <p><strong>${attack.name} Damage</strong></p>
         <p>${damage.formula} = <strong>${damage.total}</strong></p>
       `;
 
       await OBR.notification.show(
-        `${data.name} rolled ${data.weapon1Name} damage: ${damage.total}`
+        `${c.name || "Character"} rolled ${attack.name} damage: ${damage.total}`
       );
     } catch (err) {
       console.error(err);

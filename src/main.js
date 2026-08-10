@@ -19,13 +19,24 @@ app.innerHTML = `
 
   <p id="saved-url-display"></p>
   <div id="character-info"></div>
+  <div id="ability-actions"></div>
   <div id="result"></div>
+  <section aria-labelledby="roll-log-title">
+    <h3 id="roll-log-title">Shared roll log</h3>
+    <ol id="roll-log"><li>No rolls yet.</li></ol>
+  </section>
 `;
 
 const result = document.getElementById("result");
 const scriptUrlInput = document.getElementById("script-url");
 const characterInfo = document.getElementById("character-info");
 const savedUrlDisplay = document.getElementById("saved-url-display");
+const abilityActions = document.getElementById("ability-actions");
+const rollLog = document.getElementById("roll-log");
+
+const ROLL_CHANNEL = "com.owlbear-sheet-roller/roll";
+const ROLL_LOG_KEY = "com.owlbear-sheet-roller/rolls";
+const MAX_ROLLS = 10;
 
 let characterData = null;
 
@@ -103,9 +114,82 @@ function getPrimaryAttack(data) {
   return equipped || data.attacks[0];
 }
 
+function getAbilities(data) {
+  if (!Array.isArray(data?.abilities)) return [];
+
+  return data.abilities.filter(
+    ability => ability && ability.name && (ability.roll || ability.dice)
+  );
+}
+
+function formatModifier(value) {
+  const modifier = parseBonus(value);
+  return modifier >= 0 ? `+${modifier}` : String(modifier);
+}
+
+function renderRollLog(rolls) {
+  rollLog.replaceChildren();
+
+  if (!Array.isArray(rolls) || rolls.length === 0) {
+    const empty = document.createElement("li");
+    empty.textContent = "No rolls yet.";
+    rollLog.append(empty);
+    return;
+  }
+
+  for (const roll of rolls) {
+    const item = document.createElement("li");
+    const title = document.createElement("strong");
+    title.textContent = `${roll.character}: ${roll.label}`;
+    const detail = document.createElement("span");
+    detail.textContent = ` ${roll.detail} = ${roll.total} — ${roll.player}`;
+    item.append(title, detail);
+    rollLog.append(item);
+  }
+}
+
+async function publishRoll({ character, label, detail, total }) {
+  const player = await OBR.player.getName();
+  const roll = {
+    id: `${Date.now()}-${OBR.player.id}`,
+    character,
+    label,
+    detail,
+    total,
+    player,
+    createdAt: new Date().toISOString()
+  };
+  const metadata = await OBR.room.getMetadata();
+  const existing = Array.isArray(metadata[ROLL_LOG_KEY]) ? metadata[ROLL_LOG_KEY] : [];
+  const rolls = [roll, ...existing].slice(0, MAX_ROLLS);
+
+  await OBR.room.setMetadata({ [ROLL_LOG_KEY]: rolls });
+  await OBR.broadcast.sendMessage(ROLL_CHANNEL, roll, { destination: "REMOTE" });
+  renderRollLog(rolls);
+}
+
+function renderAbilities(data) {
+  abilityActions.replaceChildren();
+  const abilities = getAbilities(data);
+  if (abilities.length === 0) return;
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Abilities";
+  abilityActions.append(heading);
+
+  for (const ability of abilities) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = ability.name;
+    button.onclick = () => rollAbility(ability);
+    abilityActions.append(button);
+  }
+}
+
 function renderCharacter(data) {
   const c = data.character || {};
   const firstAttack = getPrimaryAttack(data);
+  const attributes = c.attributes && typeof c.attributes === "object" ? c.attributes : {};
 
   characterInfo.innerHTML = `
     <p><strong>${c.name || "Unknown Character"}</strong></p>
@@ -114,10 +198,18 @@ function renderCharacter(data) {
     <p>Temp HP: ${c.hp?.temp ?? 0}</p>
     <p>Initiative: ${c.initiative ?? "?"}</p>
     <p>Speed: ${c.speed ?? "?"}</p>
+    <div id="character-attributes"></div>
     <p>Weapon: ${firstAttack ? firstAttack.name : "None"}</p>
     <p>Attack Bonus: ${firstAttack ? firstAttack.attackBonus : "-"}</p>
     <p>Damage: ${firstAttack ? firstAttack.damage : "-"}</p>
   `;
+  const attributeList = document.getElementById("character-attributes");
+  for (const [name, value] of Object.entries(attributes)) {
+    const stat = document.createElement("p");
+    stat.textContent = `${name}: ${value}`;
+    attributeList.append(stat);
+  }
+  renderAbilities(data);
 }
 
 function requireCharacter() {
@@ -127,8 +219,42 @@ function requireCharacter() {
   return characterData;
 }
 
+async function rollAbility(ability) {
+  try {
+    const data = requireCharacter();
+    const c = data.character || {};
+    const rolled = rollDice(ability.roll || ability.dice);
+    const detail = `${rolled.formula} (${rolled.rolls.join(", ")}${
+      rolled.mod ? ` ${formatModifier(rolled.mod)}` : ""
+    })`;
+
+    result.innerHTML = `
+      <p><strong>${ability.name}</strong></p>
+      <p>${detail} = <strong>${rolled.total}</strong></p>
+    `;
+    await publishRoll({
+      character: c.name || "Character",
+      label: ability.name,
+      detail,
+      total: rolled.total
+    });
+  } catch (err) {
+    console.error(err);
+    result.innerHTML = `<p style="color:red;">Ability roll failed: ${err.message}</p>`;
+  }
+}
+
 async function init() {
   await OBR.onReady();
+
+  const initialMetadata = await OBR.room.getMetadata();
+  renderRollLog(initialMetadata[ROLL_LOG_KEY]);
+  OBR.room.onMetadataChange(metadata => renderRollLog(metadata[ROLL_LOG_KEY]));
+  OBR.broadcast.onMessage(ROLL_CHANNEL, ({ data }) => {
+    if (data?.character && data?.label) {
+      OBR.notification.show(`${data.character}: ${data.label} = ${data.total}`);
+    }
+  });
 
   document.getElementById("save-url").onclick = async () => {
     const url = scriptUrlInput.value.trim();
@@ -136,6 +262,7 @@ async function init() {
     savedUrlDisplay.textContent = `Saved URL: ${url || "(none)"}`;
     characterData = null;
     characterInfo.innerHTML = "";
+    abilityActions.replaceChildren();
     result.innerHTML = `<p>Saved URL. Character cache cleared.</p>`;
     await OBR.notification.show("Apps Script URL saved");
   };
@@ -205,6 +332,13 @@ async function init() {
         <p>${d20} + ${bonus} = <strong>${total}</strong></p>
       `;
 
+      await publishRoll({
+        character: c.name || "Character",
+        label: "Initiative",
+        detail: `d20 (${d20}) ${formatModifier(bonus)}`,
+        total
+      });
+
       await OBR.notification.show(`${c.name || "Character"} rolled initiative ${total}`);
     } catch (err) {
       console.error(err);
@@ -230,6 +364,13 @@ async function init() {
         <p><strong>${attack.name} Attack</strong></p>
         <p>${d20} + ${attackBonus} = <strong>${attackTotal}</strong></p>
       `;
+
+      await publishRoll({
+        character: c.name || "Character",
+        label: `${attack.name} Attack`,
+        detail: `d20 (${d20}) ${formatModifier(attackBonus)}`,
+        total: attackTotal
+      });
 
       await OBR.notification.show(
         `${c.name || "Character"} attacked with ${attack.name}: ${attackTotal}`
@@ -260,6 +401,16 @@ async function init() {
         <p><strong>${attack.name} Damage</strong></p>
         <p>${damage.formula} = <strong>${damage.total}</strong></p>
       `;
+
+      const detail = `${damage.formula} (${damage.rolls.join(", ")}${
+        damage.mod ? ` ${formatModifier(damage.mod)}` : ""
+      })`;
+      await publishRoll({
+        character: c.name || "Character",
+        label: `${attack.name} Damage`,
+        detail,
+        total: damage.total
+      });
 
       await OBR.notification.show(
         `${c.name || "Character"} rolled ${attack.name} damage: ${damage.total}`

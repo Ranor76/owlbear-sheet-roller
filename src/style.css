@@ -38,3 +38,11 @@ button {
 #result p {
   margin: 6px 0;
 }
+
+#roll-log {
+  padding-left: 22px;
+}
+
+#roll-log li {
+  margin-bottom: 8px;
+}
